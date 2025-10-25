@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Tuple
 import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters
+from aiohttp import web
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -951,7 +952,7 @@ async def whale_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def batch_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📝 請輸入巨鯨資料，每行一個，格式:\n"
+        "📝 請輸入巨鯨資料,每行一個,格式:\n"
         "地址 備註名稱\n\n"
         "範例:\n"
         "0x123...abc 巨鯨A\n"
@@ -1300,10 +1301,33 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update and update.effective_message:
             await update.effective_message.reply_text(
-                "❌ 發生錯誤，請稍後再試或聯繫管理員"
+                "❌ 發生錯誤,請稍後再試或聯繫管理員"
             )
     except Exception as e:
         print(f"Error sending error message: {e}")
+
+# ==================== HTTP 健康檢查伺服器 ====================
+async def health_check(request):
+    """健康檢查端點 - 供 Render 檢測用"""
+    return web.Response(text="✅ Telegram Bot is running!")
+
+async def start_health_server():
+    """啟動 HTTP 伺服器供 Render 檢測端口"""
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Render 會自動提供 PORT 環境變數
+    port = int(os.environ.get('PORT', 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"✅ HTTP health server started on port {port}")
+    
+    return site
+# ============================================================
 
 async def post_init(application: Application):
     print("📋 Setting up bot commands...")
@@ -1313,6 +1337,11 @@ async def post_init(application: Application):
 def main():
     print("🤖 啟動中...")
     print(f"Token: {TELEGRAM_TOKEN[:10]}...")
+    
+    # 啟動 HTTP 健康檢查伺服器（用於 Render 端口檢測）
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(start_health_server())
     
     application = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     
