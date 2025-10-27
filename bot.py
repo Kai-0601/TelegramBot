@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
 import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from aiohttp import web
 from dotenv import load_dotenv
 
@@ -19,9 +19,6 @@ WHALES_FILE = os.path.join(os.path.dirname(__file__), 'whales.json')
 
 if not TELEGRAM_TOKEN:
     raise ValueError("請在 .env 文件中設置 TELEGRAM_TOKEN")
-
-ADD_ADDRESS, ADD_NAME = range(2)
-BATCH_ADD_DATA = range(1)
 
 class WhaleTracker:
     def __init__(self):
@@ -42,22 +39,6 @@ class WhaleTracker:
         with open(WHALES_FILE, 'w', encoding='utf-8') as f:
             json.dump(self.whales, f, ensure_ascii=False, indent=2)
     
-    def add_whale(self, address: str, name: str = '') -> bool:
-        if address not in self.whales:
-            self.whales[address] = name or address[:8]
-            self.save_whales()
-            return True
-        return False
-    
-    def remove_whale(self, address: str) -> bool:
-        if address in self.whales:
-            del self.whales[address]
-            self.save_whales()
-            if address in self.last_positions:
-                del self.last_positions[address]
-            return True
-        return False
-    
     async def fetch_positions(self, address: str) -> List[Dict]:
         async with aiohttp.ClientSession() as session:
             try:
@@ -71,6 +52,22 @@ class WhaleTracker:
                         return data.get('assetPositions', [])
             except Exception as e:
                 print(f"Error fetching positions for {address}: {e}")
+        return []
+    
+    async def fetch_user_fills(self, address: str) -> List[Dict]:
+        """獲取用戶的交易歷史"""
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.post(
+                    f'{HYPERLIQUID_API}/info',
+                    json={'type': 'userFills', 'user': address},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data if isinstance(data, list) else []
+            except Exception as e:
+                print(f"Error fetching fills for {address}: {e}")
         return []
     
     def format_position(self, pos: Dict) -> str:
@@ -101,31 +98,90 @@ class WhaleTracker:
 ⚠️ 強平價: ${liquidation_px:,.4f}
 """
     
-    def positions_changed(self, address: str, new_positions: List) -> Tuple[bool, float]:
+    def detect_position_changes(self, address: str, new_positions: List) -> Tuple[List[str], Dict]:
+        """檢測持倉變化並返回通知訊息"""
+        notifications = []
+        changes = {}
+        
+        # 建立新的持倉字典
+        new_pos_dict = {}
+        for p in new_positions:
+            coin = p['position']['coin']
+            szi = float(p['position'].get('szi', '0'))
+            margin = float(p['position'].get('marginUsed', '0'))
+            entry_px = float(p['position'].get('entryPx', '0'))
+            new_pos_dict[coin] = {
+                'szi': szi,
+                'margin': margin,
+                'entry_px': entry_px
+            }
+        
+        # 如果是第一次檢測,只記錄不通知
         if address not in self.last_positions:
-            new_margins = {}
-            for p in new_positions:
-                coin = p['position']['coin']
-                margin = float(p['position'].get('marginUsed', '0'))
-                new_margins[coin] = margin
-            self.last_positions[address] = new_margins
-            return False, 0.0
+            self.last_positions[address] = new_pos_dict
+            return [], {}
         
         old_pos_dict = self.last_positions[address]
-        old_total = sum(old_pos_dict.values())
-        new_total = sum(float(p['position'].get('marginUsed', '0')) for p in new_positions)
         
-        margin_diff = new_total - old_total
+        # 檢測新開倉
+        for coin, new_data in new_pos_dict.items():
+            if coin not in old_pos_dict:
+                direction = "🟢 做多" if new_data['szi'] > 0 else "🔴 做空"
+                notifications.append(
+                    f"🆕 <b>開倉</b>\n"
+                    f"幣種: <b>{coin}</b>\n"
+                    f"方向: {direction}\n"
+                    f"保證金: ${new_data['margin']:,.2f} USDT\n"
+                    f"開倉價: ${new_data['entry_px']:,.4f}"
+                )
+                changes[coin] = 'open'
         
-        if old_total > 0:
-            margin_change_percent = abs(margin_diff / old_total * 100)
-        else:
-            margin_change_percent = 0
+        # 檢測平倉
+        for coin, old_data in old_pos_dict.items():
+            if coin not in new_pos_dict:
+                direction = "🟢 做多" if old_data['szi'] > 0 else "🔴 做空"
+                notifications.append(
+                    f"🔚 <b>平倉</b>\n"
+                    f"幣種: <b>{coin}</b>\n"
+                    f"方向: {direction}\n"
+                    f"原保證金: ${old_data['margin']:,.2f} USDT\n"
+                    f"開倉價: ${old_data['entry_px']:,.4f}"
+                )
+                changes[coin] = 'close'
         
-        if margin_change_percent >= 10:
-            return True, margin_diff
+        # 檢測加倉/減倉
+        for coin in set(new_pos_dict.keys()) & set(old_pos_dict.keys()):
+            old_margin = old_pos_dict[coin]['margin']
+            new_margin = new_pos_dict[coin]['margin']
+            margin_diff = new_margin - old_margin
+            
+            # 保證金變化超過10%
+            if abs(margin_diff / old_margin) > 0.1 if old_margin > 0 else False:
+                direction = "🟢 做多" if new_pos_dict[coin]['szi'] > 0 else "🔴 做空"
+                
+                if margin_diff > 0:
+                    notifications.append(
+                        f"📈 <b>加倉</b>\n"
+                        f"幣種: <b>{coin}</b>\n"
+                        f"方向: {direction}\n"
+                        f"保證金變化: ${old_margin:,.2f} → ${new_margin:,.2f} USDT\n"
+                        f"增加: ${margin_diff:,.2f} USDT"
+                    )
+                    changes[coin] = 'add'
+                else:
+                    notifications.append(
+                        f"📉 <b>減倉</b>\n"
+                        f"幣種: <b>{coin}</b>\n"
+                        f"方向: {direction}\n"
+                        f"保證金變化: ${old_margin:,.2f} → ${new_margin:,.2f} USDT\n"
+                        f"減少: ${abs(margin_diff):,.2f} USDT"
+                    )
+                    changes[coin] = 'reduce'
         
-        return False, 0.0
+        # 更新記錄
+        self.last_positions[address] = new_pos_dict
+        
+        return notifications, changes
 
 tracker = WhaleTracker()
 
@@ -134,6 +190,7 @@ def get_keyboard(address: str = None) -> InlineKeyboardMarkup:
     if address:
         keyboard.append([InlineKeyboardButton("🔄 立即更新", callback_data=f"refresh:{address}")])
         keyboard.append([InlineKeyboardButton("📋 複製地址", callback_data=f"copy:{address}")])
+        keyboard.append([InlineKeyboardButton("📜 查看歷史", callback_data=f"history:{address}")])
     else:
         keyboard.append([InlineKeyboardButton("🔄 立即更新", callback_data="refresh_all")])
     return InlineKeyboardMarkup(keyboard)
@@ -148,29 +205,13 @@ def get_whale_list_keyboard(action: str) -> InlineKeyboardMarkup:
     keyboard.append([InlineKeyboardButton("❌ 取消", callback_data="cancel")])
     return InlineKeyboardMarkup(keyboard)
 
-def get_batch_remove_keyboard() -> InlineKeyboardMarkup:
-    keyboard = []
-    for address, name in tracker.whales.items():
-        keyboard.append([InlineKeyboardButton(
-            f"☑️ {name}", 
-            callback_data=f"toggle_remove:{address}"
-        )])
-    keyboard.append([
-        InlineKeyboardButton("✅ 確認移除", callback_data="confirm_batch_remove"),
-        InlineKeyboardButton("❌ 取消", callback_data="cancel")
-    ])
-    return InlineKeyboardMarkup(keyboard)
-
 async def setup_commands(application: Application):
     commands = [
         BotCommand("start", "🤖 啟動機器人"),
-        BotCommand("add", "🐋 新增巨鯨"),
-        BotCommand("batchadd", "🐋 批量新增巨鯨"),
-        BotCommand("remove", "🐋 移除巨鯨"),
-        BotCommand("batchremove", "🐋 批量移除巨鯨"),
         BotCommand("list", "🐋 查看追蹤列表"),
         BotCommand("whalecheck", "🐋 查看特定巨鯨"),
         BotCommand("allwhale", "🐋 查看所有巨鯨持倉"),
+        BotCommand("history", "📜 查看巨鯨歷史紀錄"),
         BotCommand("test", "🔧 測試API連接"),
     ]
     await application.bot.set_my_commands(commands)
@@ -180,15 +221,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tracker.subscribed_chats.add(chat_id)
     
     await update.message.reply_text(
-        "🤖 <b>Hyperliquid Bot</b>\n\n"
+        "🤖 <b>Hyperliquid 巨鯨追蹤機器人</b>\n"
+        "🧑  <b>作者：Kai0601</b>\n\n"
         "🐋 <b>巨鯨追蹤:</b>\n"
-        "/add - 新增巨鯨\n"
-        "/batchadd - 批量新增巨鯨\n"
-        "/remove - 移除巨鯨\n"
-        "/batchremove - 批量移除巨鯨\n"
         "/list - 查看追蹤列表\n"
         "/whalecheck - 查看特定巨鯨\n"
-        "/allwhale - 查看所有巨鯨持倉\n\n"
+        "/allwhale - 查看所有巨鯨持倉\n"
+        "/history - 查看巨鯨歷史紀錄\n\n"
         "🔧 <b>系統功能:</b>\n"
         "/test - 測試API連接",
         parse_mode='HTML'
@@ -225,38 +264,6 @@ async def test_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result_text += "\n\n✅ 所有API運作正常！"
     
     await update.message.reply_text(result_text, parse_mode='HTML')
-
-async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📝 請輸入巨鯨地址:")
-    return ADD_ADDRESS
-
-async def add_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['whale_address'] = update.message.text.strip()
-    await update.message.reply_text("📝 請輸入備註:")
-    return ADD_NAME
-
-async def add_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    address = context.user_data.get('whale_address')
-    name = update.message.text.strip()
-    
-    if tracker.add_whale(address, name):
-        await update.message.reply_text(f"✅ 已新增: {name}")
-    else:
-        await update.message.reply_text("⚠️ 已存在")
-    
-    return ConversationHandler.END
-
-async def add_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ 已取消")
-    return ConversationHandler.END
-
-async def remove_whale(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not tracker.whales:
-        await update.message.reply_text("📭 無巨鯨")
-        return
-    
-    keyboard = get_whale_list_keyboard("remove")
-    await update.message.reply_text("選擇移除:", reply_markup=keyboard)
 
 async def list_whales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not tracker.whales:
@@ -296,44 +303,13 @@ async def whale_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = get_whale_list_keyboard("check")
     await update.message.reply_text("請選擇要查看的巨鯨:", reply_markup=keyboard)
 
-async def batch_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📝 請輸入巨鯨資料，每行一個，格式:\n"
-        "地址 備註名稱\n\n"
-        "範例:\n"
-        "0x123...abc 巨鯨A\n"
-        "0x456...def 巨鯨B",
-        parse_mode='HTML'
-    )
-    return BATCH_ADD_DATA
-
-async def batch_add_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lines = update.message.text.strip().split('\n')
-    added = 0
-    
-    for line in lines:
-        parts = line.strip().split(None, 1)
-        if len(parts) >= 1:
-            address = parts[0]
-            name = parts[1] if len(parts) > 1 else ''
-            if tracker.add_whale(address, name):
-                added += 1
-    
-    await update.message.reply_text(f"✅ 成功新增 {added}/{len(lines)} 個巨鯨")
-    return ConversationHandler.END
-
-async def batch_add_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ 已取消批量新增")
-    return ConversationHandler.END
-
-async def batch_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not tracker.whales:
         await update.message.reply_text("📭 目前沒有追蹤任何巨鯨")
         return
     
-    context.user_data['remove_list'] = []
-    keyboard = get_batch_remove_keyboard()
-    await update.message.reply_text("請選擇要移除的巨鯨 (可多選):", reply_markup=keyboard)
+    keyboard = get_whale_list_keyboard("history")
+    await update.message.reply_text("請選擇要查看歷史的巨鯨:", reply_markup=keyboard)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -370,16 +346,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(text, parse_mode='HTML', reply_markup=get_keyboard(address))
         return
     
-    if data.startswith("remove:"):
-        address = data.split(":", 1)[1]
-        name = tracker.whales.get(address, address[:8])
-        
-        if tracker.remove_whale(address):
-            await query.edit_message_text(f"✅ 已移除: {name}")
-        else:
-            await query.edit_message_text("⚠️ 失敗")
-        return
-    
     if data.startswith("check:"):
         address = data.split(":", 1)[1]
         positions = await tracker.fetch_positions(address)
@@ -400,46 +366,94 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("✅ 已顯示巨鯨持倉")
         return
     
-    if data.startswith("toggle_remove:"):
+    if data.startswith("history:"):
         address = data.split(":", 1)[1]
-        remove_list = context.user_data.get('remove_list', [])
+        context.user_data['history_address'] = address
         
-        if address in remove_list:
-            remove_list.remove(address)
-        else:
-            remove_list.append(address)
+        # 顯示歷史查詢選項
+        keyboard = [
+            [
+                InlineKeyboardButton("🟢 買入紀錄", callback_data=f"history_filter:{address}:buy"),
+                InlineKeyboardButton("🔴 賣出紀錄", callback_data=f"history_filter:{address}:sell")
+            ],
+            [
+                InlineKeyboardButton("📊 最近10筆", callback_data=f"history_filter:{address}:10"),
+                InlineKeyboardButton("📊 最近20筆", callback_data=f"history_filter:{address}:20"),
+                InlineKeyboardButton("📊 最近30筆", callback_data=f"history_filter:{address}:30")
+            ],
+            [InlineKeyboardButton("❌ 取消", callback_data="cancel")]
+        ]
         
-        context.user_data['remove_list'] = remove_list
-        
-        keyboard = []
-        for addr, name in tracker.whales.items():
-            emoji = "✅" if addr in remove_list else "☑️"
-            keyboard.append([InlineKeyboardButton(
-                f"{emoji} {name}", 
-                callback_data=f"toggle_remove:{addr}"
-            )])
-        keyboard.append([
-            InlineKeyboardButton("✅ 確認移除", callback_data="confirm_batch_remove"),
-            InlineKeyboardButton("❌ 取消", callback_data="cancel")
-        ])
-        
-        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+        name = tracker.whales.get(address, address[:8])
+        await query.edit_message_text(
+            f"📜 <b>{name}</b> 歷史查詢\n\n請選擇查詢方式:",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
     
-    if data == "confirm_batch_remove":
-        remove_list = context.user_data.get('remove_list', [])
+    if data.startswith("history_filter:"):
+        parts = data.split(":")
+        address = parts[1]
+        filter_type = parts[2]
         
-        if not remove_list:
-            await query.edit_message_text("⚠️ 未選擇任何巨鯨")
+        await query.answer("📜 正在查詢歷史...")
+        
+        name = tracker.whales.get(address, address[:8])
+        fills = await tracker.fetch_user_fills(address)
+        
+        if not fills:
+            await query.message.reply_text(f"📭 {name} 暫無歷史紀錄")
             return
         
-        removed = 0
-        for address in remove_list:
-            if tracker.remove_whale(address):
-                removed += 1
+        # 根據篩選條件處理
+        if filter_type == "buy":
+            filtered_fills = [f for f in fills if f.get('side') == 'B']
+            title = "買入紀錄"
+        elif filter_type == "sell":
+            filtered_fills = [f for f in fills if f.get('side') == 'A']
+            title = "賣出紀錄"
+        else:
+            # 數量篩選
+            limit = int(filter_type)
+            filtered_fills = fills[:limit]
+            title = f"最近 {limit} 筆"
         
-        context.user_data['remove_list'] = []
-        await query.edit_message_text(f"✅ 成功移除 {removed} 個巨鯨")
+        if not filtered_fills:
+            await query.message.reply_text(f"📭 {name} 無符合條件的紀錄")
+            return
+        
+        text = f"📜 <b>{name}</b> - {title}\n\n"
+        
+        for i, fill in enumerate(filtered_fills, 1):
+            coin = fill.get('coin', 'UNKNOWN')
+            side = fill.get('side', '')
+            px = float(fill.get('px', 0))
+            sz = float(fill.get('sz', 0))
+            time = fill.get('time', 0)
+            
+            # 計算 USDT 金額
+            usdt_amount = px * sz
+            
+            # 轉換時間戳
+            dt = datetime.fromtimestamp(time / 1000, timezone(timedelta(hours=8)))
+            time_str = dt.strftime('%m-%d %H:%M')
+            
+            side_emoji = "🟢" if side == "B" else "🔴"
+            side_text = "買入" if side == "B" else "賣出"
+            
+            text += f"{i}. {side_emoji} <b>{coin}</b> {side_text}\n"
+            text += f"   價格: ${px:,.4f}\n"
+            text += f"   數量: ${usdt_amount:,.2f} USDT\n"
+            text += f"   時間: {time_str}\n\n"
+            
+            # 防止訊息過長
+            if len(text) > 2550:
+                text += f" 還有 {len(filtered_fills) - i} 筆紀錄,剩餘紀錄需自行查找"
+                break
+        
+        await query.message.reply_text(text, parse_mode='HTML')
+        await query.edit_message_text("✅ 已顯示歷史紀錄")
         return
 
 async def auto_update(context: ContextTypes.DEFAULT_TYPE):
@@ -455,35 +469,30 @@ async def auto_update(context: ContextTypes.DEFAULT_TYPE):
         if not positions:
             continue
         
-        changed, margin_diff = tracker.positions_changed(address, positions)
+        # 檢測持倉變化
+        notifications, changes = tracker.detect_position_changes(address, positions)
         
-        should_notify = False
-        notification_type = ""
+        # 如果有即時變化,立即發送通知
+        if notifications:
+            for notification in notifications:
+                text = f"🐋 <b>{name}</b>\n⚡ <b>即時交易通知</b>\n🕐 {taipei_time.strftime('%m-%d %H:%M:%S')} (台北)\n\n{notification}"
+                
+                for chat_id in tracker.subscribed_chats:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=text,
+                            parse_mode='HTML',
+                            reply_markup=get_keyboard(address)
+                        )
+                    except Exception as e:
+                        print(f"Error sending notification: {e}")
+                
+                await asyncio.sleep(1)
         
-        if changed:
-            should_notify = True
-            notification_type = "🔔 持倉變動通知"
-            
-            new_margins = {}
-            for p in positions:
-                coin = p['position']['coin']
-                margin = float(p['position'].get('marginUsed', '0'))
-                new_margins[coin] = margin
-            tracker.last_positions[address] = new_margins
-            
-        elif is_30min_mark:
-            should_notify = True
-            notification_type = "🔔 固定通知"
-            
-            new_margins = {}
-            for p in positions:
-                coin = p['position']['coin']
-                margin = float(p['position'].get('marginUsed', '0'))
-                new_margins[coin] = margin
-            tracker.last_positions[address] = new_margins
-        
-        if should_notify:
-            text = f"🐋 <b>{name}</b>\n{notification_type}\n🕐 {taipei_time.strftime('%m-%d %H:%M:%S')} (台北)"
+        # 每30分鐘的定時通知
+        if is_30min_mark:
+            text = f"🐋 <b>{name}</b>\n🔔 定時更新\n🕐 {taipei_time.strftime('%m-%d %H:%M:%S')} (台北)"
             
             for pos in positions:
                 text += tracker.format_position(pos)
@@ -507,7 +516,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update and update.effective_message:
             await update.effective_message.reply_text(
-                "❌ 發生錯誤，請稍後再試或聯繫管理員"
+                "❌ 發生錯誤,請稍後再試或聯繫管理員"
             )
     except Exception as e:
         print(f"Error sending error message: {e}")
@@ -545,32 +554,12 @@ def main():
     
     application = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     
-    add_handler = ConversationHandler(
-        entry_points=[CommandHandler('add', add_start)],
-        states={
-            ADD_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_address)],
-            ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_name)],
-        },
-        fallbacks=[CommandHandler('cancel', add_cancel)],
-    )
-    
-    batch_add_handler = ConversationHandler(
-        entry_points=[CommandHandler('batchadd', batch_add_start)],
-        states={
-            BATCH_ADD_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, batch_add_data)],
-        },
-        fallbacks=[CommandHandler('cancel', batch_add_cancel)],
-    )
-    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("test", test_api))
-    application.add_handler(add_handler)
-    application.add_handler(CommandHandler("remove", remove_whale))
-    application.add_handler(batch_add_handler)
-    application.add_handler(CommandHandler("batchremove", batch_remove))
     application.add_handler(CommandHandler("list", list_whales))
     application.add_handler(CommandHandler("whalecheck", whale_check))
     application.add_handler(CommandHandler("allwhale", show_all_positions))
+    application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     
     application.add_error_handler(error_handler)
