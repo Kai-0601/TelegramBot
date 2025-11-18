@@ -2,8 +2,6 @@ import os
 import sys
 import json
 import asyncio
-import hmac
-import hashlib
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -14,7 +12,6 @@ from aiohttp import web
 from dotenv import load_dotenv
 from deep_translator import GoogleTranslator
 import re
-from urllib.parse import urlencode
 
 load_dotenv()
 
@@ -29,16 +26,10 @@ TWITTER_BEARER_TOKEN = os.getenv('TWITTER_BEARER_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
-# MEXC API 設定
-MEXC_API_KEY = os.getenv('MEXC_API_KEY')
-MEXC_SECRET_KEY = os.getenv('MEXC_SECRET_KEY')
-MEXC_API_BASE = 'https://contract.mexc.com'
-
 WHALES_FILE = os.path.join(os.path.dirname(__file__), 'whales.json')
 TETHER_LAST_FILE = os.path.join(os.path.dirname(__file__), 'tether_last.json')
 TWITTER_ACCOUNTS_FILE = os.path.join(os.path.dirname(__file__), 'twitter_accounts.json')
 TWITTER_LAST_TWEETS_FILE = os.path.join(os.path.dirname(__file__), 'twitter_last_tweets.json')
-MEXC_LAST_FILE = os.path.join(os.path.dirname(__file__), 'mexc_last.json')
 
 TETHER_CONTRACT = '0xdAC17F958D2ee523a2206206994597C13D831ec7'
 TETHER_MULTISIG = '0xC6CDE7C39eB2f0F0095F41570af89eFC2C1Ea828'
@@ -168,237 +159,6 @@ class TranslationService:
         
         print(f"ℹ️ 使用 Google Translate 作為後備翻譯")
         return await self.translate_with_google(text)
-
-class MexcMonitor:
-    """MEXC 合約倉位監控 - 完全修正版（正確簽名）"""
-    
-    def __init__(self):
-        self.last_positions: Dict[str, Dict] = {}
-        self.load_last_positions()
-    
-    def load_last_positions(self):
-        if os.path.exists(MEXC_LAST_FILE):
-            try:
-                with open(MEXC_LAST_FILE, 'r', encoding='utf-8') as f:
-                    self.last_positions = json.load(f)
-            except Exception as e:
-                print(f"載入 MEXC 最後倉位失敗: {e}")
-    
-    def save_last_positions(self):
-        try:
-            with open(MEXC_LAST_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self.last_positions, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"儲存 MEXC 最後倉位失敗: {e}")
-    
-    def _generate_signature(self, query_string: str) -> str:
-        """
-        生成 MEXC API 簽名
-        簽名方式：HMAC SHA256(query_string, secret_key)
-        """
-        signature = hmac.new(
-            MEXC_SECRET_KEY.encode('utf-8'),
-            query_string.encode('utf-8'),
-            hashlib.sha256
-        ).hexdigest()
-        return signature
-    
-    async def get_positions(self) -> List[Dict]:
-        """獲取 MEXC 合約倉位 - 正確簽名版本"""
-        if not MEXC_API_KEY or not MEXC_SECRET_KEY:
-            print("❌ MEXC API 金鑰未設置")
-            return []
-        
-        try:
-            # 使用當前時間戳（毫秒）
-            timestamp = int(time.time() * 1000)
-            
-            # 構建參數字典
-            params = {
-                'api_key': MEXC_API_KEY,
-                'req_time': str(timestamp)
-            }
-            
-            # 將參數按鍵名升序排列後生成查詢字符串
-            sorted_params = sorted(params.items())
-            query_string = '&'.join([f"{k}={v}" for k, v in sorted_params])
-            
-            # 生成簽名
-            signature = self._generate_signature(query_string)
-            
-            # 將簽名添加到參數中
-            params['sign'] = signature
-            
-            # API endpoint
-            url = f"{MEXC_API_BASE}/api/v1/private/position/open_positions"
-            
-            print(f"\n{'='*50}")
-            print(f"🔍 MEXC API 請求詳情")
-            print(f"{'='*50}")
-            print(f"📍 URL: {url}")
-            print(f"🔑 API Key: {MEXC_API_KEY[:10]}...{MEXC_API_KEY[-4:]}")
-            print(f"⏰ 時間戳: {timestamp}")
-            print(f"📝 查詢字符串: {query_string}")
-            print(f"✍️ 簽名: {signature}")
-            print(f"{'='*50}\n")
-            
-            # 使用 GET 請求，參數放在 URL 中
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url,
-                    params=params,
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as resp:
-                    response_text = await resp.text()
-                    print(f"📡 MEXC API 響應狀態: {resp.status}")
-                    print(f"📄 響應內容: {response_text}")
-                    
-                    if resp.status == 200:
-                        try:
-                            data = json.loads(response_text)
-                            
-                            if data.get('success'):
-                                positions = data.get('data', [])
-                                print(f"✅ 成功獲取 MEXC 倉位: {len(positions)} 個")
-                                return positions
-                            else:
-                                error_code = data.get('code')
-                                error_msg = data.get('message', 'Unknown error')
-                                
-                                print(f"\n{'='*50}")
-                                print(f"❌ MEXC API 返回錯誤")
-                                print(f"{'='*50}")
-                                print(f"錯誤代碼: {error_code}")
-                                print(f"錯誤訊息: {error_msg}")
-                                
-                                if error_code == 602:
-                                    print(f"\n⚠️ 簽名驗證失敗！請檢查：")
-                                    print(f"1. API Key: {MEXC_API_KEY[:10]}...{MEXC_API_KEY[-4:]}")
-                                    print(f"2. Secret Key 前4位: {MEXC_SECRET_KEY[:4]}...")
-                                    print(f"3. 確認沒有空格或換行符")
-                                    print(f"4. 確認時間同步（誤差 < 5秒）")
-                                    print(f"5. 建議重新生成 API Key")
-                                print(f"{'='*50}\n")
-                                
-                                return []
-                        except json.JSONDecodeError as e:
-                            print(f"❌ JSON 解析失敗: {e}")
-                            return []
-                    else:
-                        print(f"❌ HTTP 錯誤: {resp.status}")
-                        print(f"響應: {response_text}")
-                        return []
-        
-        except Exception as e:
-            print(f"❌ 獲取 MEXC 倉位錯誤: {e}")
-            import traceback
-            traceback.print_exc()
-        
-        return []
-    
-    def format_position(self, pos: Dict) -> str:
-        """格式化倉位信息"""
-        symbol = pos.get('symbol', 'UNKNOWN')
-        position_type = pos.get('positionType', 1)  # 1=多倉, 2=空倉
-        open_avg_price = float(pos.get('openAvgPrice', 0))
-        hold_vol = float(pos.get('holdVol', 0))
-        leverage = int(pos.get('leverage', 1))
-        unrealized_pnl = float(pos.get('unrealisedPnl', 0))
-        position_value = float(pos.get('positionValue', 0))
-        liquidation_price = float(pos.get('liquidatePrice', 0))
-        
-        direction = "🟢 做多" if position_type == 1 else "🔴 做空"
-        pnl_emoji = "💰" if unrealized_pnl > 0 else "💸" if unrealized_pnl < 0 else "➖"
-        
-        return f"""
-{'═' * 30}
-🪙 幣種: <b>{symbol}</b>
-📊 方向: {direction} | 槓桿: <b>{leverage}x</b>
-📦 持倉量: {hold_vol} 張
-💵 倉位價值: ${position_value:,.2f} USDT
-📍 開倉均價: ${open_avg_price:,.4f}
-{pnl_emoji} 未實現盈虧: ${unrealized_pnl:,.2f} USDT
-⚠️ 強平價: ${liquidation_price:,.4f}
-"""
-    
-    def detect_position_changes(self, new_positions: List[Dict]) -> List[str]:
-        """檢測倉位變化"""
-        notifications = []
-        
-        new_pos_dict = {}
-        for pos in new_positions:
-            symbol = pos.get('symbol')
-            position_type = pos.get('positionType')
-            key = f"{symbol}_{position_type}"
-            new_pos_dict[key] = pos
-        
-        old_pos_dict = self.last_positions
-        
-        # 檢查新開倉
-        for key, pos in new_pos_dict.items():
-            if key not in old_pos_dict:
-                symbol = pos.get('symbol')
-                position_type = pos.get('positionType')
-                direction = "🟢 做多" if position_type == 1 else "🔴 做空"
-                hold_vol = float(pos.get('holdVol', 0))
-                open_avg_price = float(pos.get('openAvgPrice', 0))
-                
-                notifications.append(
-                    f"🆕 <b>MEXC 開倉</b>\n"
-                    f"幣種: <b>{symbol}</b>\n"
-                    f"方向: {direction}\n"
-                    f"數量: {hold_vol} 張\n"
-                    f"開倉價: ${open_avg_price:,.4f}"
-                )
-        
-        # 檢查平倉
-        for key, pos in old_pos_dict.items():
-            if key not in new_pos_dict:
-                symbol = pos.get('symbol')
-                position_type = pos.get('positionType')
-                direction = "🟢 做多" if position_type == 1 else "🔴 做空"
-                hold_vol = float(pos.get('holdVol', 0))
-                
-                notifications.append(
-                    f"🔚 <b>MEXC 平倉</b>\n"
-                    f"幣種: <b>{symbol}</b>\n"
-                    f"方向: {direction}\n"
-                    f"原數量: {hold_vol} 張"
-                )
-        
-        # 檢查加減倉
-        for key in set(new_pos_dict.keys()) & set(old_pos_dict.keys()):
-            old_pos = old_pos_dict[key]
-            new_pos = new_pos_dict[key]
-            
-            old_vol = float(old_pos.get('holdVol', 0))
-            new_vol = float(new_pos.get('holdVol', 0))
-            
-            if abs(new_vol - old_vol) > 0.01:
-                symbol = new_pos.get('symbol')
-                position_type = new_pos.get('positionType')
-                direction = "🟢 做多" if position_type == 1 else "🔴 做空"
-                
-                if new_vol > old_vol:
-                    notifications.append(
-                        f"📈 <b>MEXC 加倉</b>\n"
-                        f"幣種: <b>{symbol}</b>\n"
-                        f"方向: {direction}\n"
-                        f"數量變化: {old_vol} → {new_vol} 張"
-                    )
-                else:
-                    notifications.append(
-                        f"📉 <b>MEXC 減倉</b>\n"
-                        f"幣種: <b>{symbol}</b>\n"
-                        f"方向: {direction}\n"
-                        f"數量變化: {old_vol} → {new_vol} 張"
-                    )
-        
-        # 更新最後倉位
-        self.last_positions = new_pos_dict
-        self.save_last_positions()
-        
-        return notifications
 
 class TwitterMonitor:
     """Twitter/X 監控類"""
@@ -976,7 +736,6 @@ class WhaleTracker:
 tracker = WhaleTracker()
 tether_monitor = TetherMonitor()
 twitter_monitor = TwitterMonitor()
-mexc_monitor = MexcMonitor()
 
 def get_keyboard(address: str = None) -> InlineKeyboardMarkup:
     keyboard = []
@@ -1021,7 +780,6 @@ async def setup_commands(application: Application):
         BotCommand("addx", "➕ 添加 X 帳號追蹤"),
         BotCommand("removex", "➖ 移除 X 帳號追蹤"),
         BotCommand("checkx", "🔍 查看 X 推文"),
-        BotCommand("mexc", "💼 查看 MEXC 倉位"),
         BotCommand("test", "🔧 測試API連接"),
     ]
     await application.bot.set_my_commands(commands)
@@ -1047,14 +805,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/addx - 添加 X 帳號追蹤\n"
             "/removex - 移除 X 帳號追蹤\n"
             "/checkx - 查看 X 推文\n\n"
-            "💼 <b>MEXC 監控:</b>\n"
-            "/mexc - 查看個人合約倉位\n\n"
             "🔧 <b>系統功能:</b>\n"
             "/test - 測試API連接\n\n"
             "📢 <b>自動通知:</b>\n"
             "• 巨鯨開倉/平倉/加減倉\n"
             "• Tether 鑄造事件\n"
-            "• MEXC 倉位變動\n"
             "• X (Twitter) 發文提醒 (每 3 分鐘)\n"
             "• 每30分鐘定時更新",
             parse_mode='HTML'
@@ -1063,66 +818,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"❌ start 命令錯誤: {e}")
         import traceback
         traceback.print_exc()
-
-async def mexc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """查看 MEXC 合約倉位"""
-    try:
-        if not MEXC_API_KEY or not MEXC_SECRET_KEY:
-            await update.message.reply_text(
-                "❌ MEXC API 未設置\n\n"
-                "請在 .env 文件中添加:\n"
-                "MEXC_API_KEY=你的API Key\n"
-                "MEXC_SECRET_KEY=你的Secret Key\n\n"
-                "⚠️ <b>重要提示:</b>\n"
-                "1. 請確保 API 權限包含「合約交易」讀取\n"
-                "2. 如果設置了 IP 白名單,請添加伺服器 IP\n"
-                "3. 確認 API Key 和 Secret Key 無空格\n"
-                "4. 建議重新生成 API Key",
-                parse_mode='HTML'
-            )
-            return
-        
-        await update.message.reply_text("🔍 正在獲取 MEXC 合約倉位...")
-        
-        positions = await mexc_monitor.get_positions()
-        
-        if not positions:
-            await update.message.reply_text(
-                "📭 目前沒有持倉\n\n"
-                "如果您確定有持倉但顯示為空,請:\n"
-                "1. 檢查控制台錯誤日誌\n"
-                "2. 確認 API Key 和 Secret Key\n"
-                "3. 確認 API 權限設置\n"
-                "4. 檢查 IP 白名單限制\n"
-                "5. 使用 /test 命令測試連接"
-            )
-            return
-        
-        taipei_time = datetime.now(timezone(timedelta(hours=8)))
-        text = f"💼 <b>MEXC 合約倉位</b>\n🕐 {taipei_time.strftime('%m-%d %H:%M:%S')} (台北)\n"
-        
-        total_unrealized_pnl = 0
-        for pos in positions:
-            text += mexc_monitor.format_position(pos)
-            total_unrealized_pnl += float(pos.get('unrealisedPnl', 0))
-        
-        text += f"\n{'═' * 30}\n"
-        text += f"💰 <b>總未實現盈虧:</b> ${total_unrealized_pnl:,.2f} USDT"
-        
-        await update.message.reply_text(text, parse_mode='HTML')
-        
-    except Exception as e:
-        print(f"❌ mexc_command 錯誤: {e}")
-        import traceback
-        traceback.print_exc()
-        await update.message.reply_text(
-            "❌ 獲取 MEXC 倉位失敗\n\n"
-            "請檢查:\n"
-            "1. 控制台錯誤日誌\n"
-            "2. API Key 和 Secret Key\n"
-            "3. API 權限設定\n"
-            "4. 使用 /test 命令進行診斷"
-        )
 
 async def addx_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """開始添加 X 帳號的流程"""
@@ -1259,8 +954,6 @@ async def test_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
         results.append(f"🐦 TWITTER_BEARER_TOKEN: {'✅ 已設置' if TWITTER_BEARER_TOKEN else '❌ 未設置'}")
         results.append(f"🤖 GEMINI_API_KEY: {'✅ 已設置' if GEMINI_API_KEY else '❌ 未設置'}")
         results.append(f"🤖 OPENAI_API_KEY: {'✅ 已設置' if OPENAI_API_KEY else '❌ 未設置'}")
-        results.append(f"💼 MEXC_API_KEY: {'✅ 已設置' if MEXC_API_KEY else '❌ 未設置'}")
-        results.append(f"💼 MEXC_SECRET_KEY: {'✅ 已設置' if MEXC_SECRET_KEY else '❌ 未設置'}")
         
         # 測試 Hyperliquid
         hyperliquid_test = "❌ 無法連接"
@@ -1294,36 +987,11 @@ async def test_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         results.append(f"🔗 Etherscan API: {etherscan_test}")
         
-        # 測試 MEXC API
-        mexc_test = "❌ 未測試"
-        if MEXC_API_KEY and MEXC_SECRET_KEY:
-            try:
-                print("🔧 開始測試 MEXC API...")
-                positions = await mexc_monitor.get_positions()
-                if positions is not None:
-                    mexc_test = f"✅ 連接成功 ({len(positions)} 個倉位)"
-                else:
-                    mexc_test = "⚠️ API 響應異常"
-            except Exception as e:
-                mexc_test = f"❌ 連接失敗: {str(e)[:30]}"
-                print(f"MEXC 測試錯誤: {e}")
-        else:
-            mexc_test = "❌ 未設置 API Key"
-        
-        results.append(f"🔗 MEXC API: {mexc_test}")
-        
         result_text = "📊 <b>API 測試結果:</b>\n\n" + "\n".join(results)
         
         issues = [r for r in results if '❌' in r or '⚠️' in r]
         if issues:
             result_text += "\n\n⚠️ <b>發現問題:</b>\n" + "\n".join(issues)
-            result_text += "\n\n💡 <b>MEXC 簽名錯誤解決方案:</b>\n"
-            result_text += "1. 確認 .env 文件中的 API Key 和 Secret Key\n"
-            result_text += "2. 確保沒有任何空格或換行符\n"
-            result_text += "3. 重新複製 API Key 和 Secret Key\n"
-            result_text += "4. 檢查 API 權限是否包含「合約交易」讀取\n"
-            result_text += "5. 建議完全重新生成 API Key\n"
-            result_text += "6. 檢查伺服器時間是否同步"
         else:
             result_text += "\n\n✅ 所有API運作正常!"
         
@@ -1887,44 +1555,6 @@ async def twitter_update(context: ContextTypes.DEFAULT_TYPE):
         import traceback
         traceback.print_exc()
 
-async def mexc_update(context: ContextTypes.DEFAULT_TYPE):
-    """MEXC 倉位更新 - 每 2 分鐘檢查一次"""
-    try:
-        if not tracker.subscribed_chats or not MEXC_API_KEY or not MEXC_SECRET_KEY:
-            return
-        
-        print(f"💼 開始檢查 MEXC 倉位變動...")
-        
-        positions = await mexc_monitor.get_positions()
-        
-        if positions is None:
-            return
-        
-        notifications = mexc_monitor.detect_position_changes(positions)
-        
-        if notifications:
-            taipei_time = datetime.now(timezone(timedelta(hours=8)))
-            
-            for notification in notifications:
-                text = f"💼 <b>MEXC 倉位變動通知</b>\n🕐 {taipei_time.strftime('%m-%d %H:%M:%S')} (台北)\n\n{notification}"
-                
-                for chat_id in tracker.subscribed_chats:
-                    try:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=text,
-                            parse_mode='HTML'
-                        )
-                    except Exception as e:
-                        print(f"發送 MEXC 通知錯誤: {e}")
-                
-                await asyncio.sleep(2)
-        
-    except Exception as e:
-        print(f"❌ MEXC 更新錯誤: {e}")
-        import traceback
-        traceback.print_exc()
-
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"❌ 全局錯誤處理器: 更新 {update} 導致錯誤 {context.error}")
     import traceback
@@ -1973,7 +1603,6 @@ def main():
         print(f"📡 使用 Etherscan V2 API: {ETHERSCAN_API}")
         print(f"🔧 翻譯服務: Gemini/OpenAI/Google Translate")
         print(f"⚡ Twitter 監控頻率: 每 180 秒 (3 分鐘)")
-        print(f"💼 MEXC 監控頻率: 每 120 秒 (2 分鐘)")
         
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -2007,7 +1636,6 @@ def main():
         application.add_handler(addx_conv_handler)
         application.add_handler(CommandHandler("removex", removex_command))
         application.add_handler(CommandHandler("checkx", checkx_command))
-        application.add_handler(CommandHandler("mexc", mexc_command))
         application.add_handler(CallbackQueryHandler(button_callback))
         
         application.add_error_handler(error_handler)
@@ -2017,12 +1645,10 @@ def main():
             job_queue.run_repeating(auto_update, interval=60, first=10)
             job_queue.run_repeating(tether_update, interval=300, first=30)
             job_queue.run_repeating(twitter_update, interval=180, first=60)
-            job_queue.run_repeating(mexc_update, interval=120, first=45)
             print("✅ 定時任務已設置")
             print("   - 巨鯨監控: 每 60 秒")
             print("   - Tether 監控: 每 300 秒 (5 分鐘)")
-            print("   - Twitter 監控: 每 180 秒 (3 分鐘) ⚡")
-            print("   - MEXC 監控: 每 120 秒 (2 分鐘) 💼")
+            print("   - Twitter 監控: 每 180 秒 (3 分鐘)")
         else:
             print("⚠️ Job queue 未啟用")
         
