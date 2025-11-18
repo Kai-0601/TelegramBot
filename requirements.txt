@@ -1,20 +1,5 @@
-# Telegram Bot 核心套件
 python-telegram-bot==20.7
-
-# 異步 HTTP 客戶端
 aiohttp==3.9.1
-
-# 網頁服務器（用於健康檢查）
-aiohttp[speedups]==3.9.1
-
-# 環境變數管理
 python-dotenv==1.0.0
-
-# 翻譯服務
 deep-translator==1.11.4
-
-# 時間處理（通常 Python 內建，但明確列出）
 python-dateutil==2.8.2
-
-# JSON 處理（Python 內建，但某些環境需要）
-simplejson==3.19.2
