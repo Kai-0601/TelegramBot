@@ -733,6 +733,7 @@ class WhaleTracker:
         
         return notifications, changes
 
+# 創建全局實例
 tracker = WhaleTracker()
 tether_monitor = TetherMonitor()
 twitter_monitor = TwitterMonitor()
@@ -768,6 +769,7 @@ def get_twitter_list_keyboard(action: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 async def setup_commands(application: Application):
+    """設置機器人命令"""
     commands = [
         BotCommand("start", "🤖 啟動機器人"),
         BotCommand("list", "🐋 查看追蹤列表"),
@@ -783,8 +785,10 @@ async def setup_commands(application: Application):
         BotCommand("test", "🔧 測試API連接"),
     ]
     await application.bot.set_my_commands(commands)
+    print("✅ 機器人命令已設置")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """啟動命令處理"""
     try:
         chat_id = update.effective_chat.id
         tracker.subscribed_chats.add(chat_id)
@@ -944,6 +948,7 @@ async def checkx_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         traceback.print_exc()
 
 async def test_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """測試 API 連接"""
     try:
         await update.message.reply_text("🔍 正在測試API連接...")
         
@@ -1002,6 +1007,7 @@ async def test_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
         traceback.print_exc()
 
 async def check_tether(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """查看 Tether 鑄造狀態"""
     try:
         await update.message.reply_text("🔍 檢查 Tether 鑄造狀態...")
         
@@ -1035,6 +1041,7 @@ async def check_tether(update: Update, context: ContextTypes.DEFAULT_TYPE):
         traceback.print_exc()
 
 async def tether_history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """查看 Tether 轉帳紀錄"""
     try:
         keyboard = [
             [
@@ -1060,6 +1067,7 @@ async def tether_history_command(update: Update, context: ContextTypes.DEFAULT_T
         traceback.print_exc()
 
 async def list_whales(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """查看巨鯨列表"""
     try:
         if not tracker.whales:
             await update.message.reply_text("📭 無巨鯨")
@@ -1076,6 +1084,7 @@ async def list_whales(update: Update, context: ContextTypes.DEFAULT_TYPE):
         traceback.print_exc()
 
 async def xlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """查看追蹤的 X 帳號列表"""
     try:
         if not twitter_monitor.accounts:
             await update.message.reply_text(
@@ -1103,6 +1112,7 @@ async def xlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         traceback.print_exc()
 
 async def removex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """移除 X 帳號追蹤"""
     try:
         if not twitter_monitor.accounts:
             await update.message.reply_text("📭 目前沒有追蹤任何 X 帳號")
@@ -1116,6 +1126,7 @@ async def removex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         traceback.print_exc()
 
 async def show_all_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """顯示所有巨鯨持倉"""
     try:
         if not tracker.whales:
             await update.message.reply_text("📭 無巨鯨")
@@ -1140,6 +1151,7 @@ async def show_all_positions(update: Update, context: ContextTypes.DEFAULT_TYPE)
         traceback.print_exc()
 
 async def whale_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """查看特定巨鯨"""
     try:
         if not tracker.whales:
             await update.message.reply_text("📭 目前沒有追蹤任何巨鯨")
@@ -1153,6 +1165,7 @@ async def whale_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         traceback.print_exc()
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """查看巨鯨歷史"""
     try:
         if not tracker.whales:
             await update.message.reply_text("📭 目前沒有追蹤任何巨鯨")
@@ -1166,6 +1179,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         traceback.print_exc()
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """按鈕回調處理"""
     query = update.callback_query
     
     try:
@@ -1202,7 +1216,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parts = data.split(":")
             username = parts[1]
             count = int(parts[2])
-            display_name = twitter_monitor.accounts.get(username, username)
             
             await query.edit_message_text(f"🔍 正在獲取 @{username} 的最新 {count} 篇推文...")
             
@@ -1342,11 +1355,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 side = fill.get('side', '')
                 px = float(fill.get('px', 0))
                 sz = float(fill.get('sz', 0))
-                time = fill.get('time', 0)
+                time_ms = fill.get('time', 0)
                 
                 usdt_amount = px * sz
                 
-                dt = datetime.fromtimestamp(time / 1000, timezone(timedelta(hours=8)))
+                dt = datetime.fromtimestamp(time_ms / 1000, timezone(timedelta(hours=8)))
                 time_str = dt.strftime('%m-%d %H:%M')
                 
                 side_emoji = "🟢" if side == "B" else "🔴"
@@ -1438,6 +1451,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 async def auto_update(context: ContextTypes.DEFAULT_TYPE):
+    """自動更新巨鯨持倉"""
     try:
         if not tracker.whales or not tracker.subscribed_chats:
             return
@@ -1494,6 +1508,7 @@ async def auto_update(context: ContextTypes.DEFAULT_TYPE):
         traceback.print_exc()
 
 async def tether_update(context: ContextTypes.DEFAULT_TYPE):
+    """Tether 鑄造監控更新"""
     try:
         if not tracker.subscribed_chats or not ETHERSCAN_API_KEY:
             return
@@ -1556,6 +1571,7 @@ async def twitter_update(context: ContextTypes.DEFAULT_TYPE):
         traceback.print_exc()
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """全局錯誤處理器"""
     print(f"❌ 全局錯誤處理器: 更新 {update} 導致錯誤 {context.error}")
     import traceback
     traceback.print_exc()
@@ -1569,9 +1585,11 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"發送錯誤訊息失敗: {e}")
 
 async def health_check(request):
+    """健康檢查端點"""
     return web.Response(text="✅ Telegram Bot 運行中!")
 
 async def start_health_server():
+    """啟動健康檢查服務器"""
     app = web.Application()
     app.router.add_get('/', health_check)
     app.router.add_get('/health', health_check)
@@ -1587,6 +1605,7 @@ async def start_health_server():
     return site
 
 async def post_init(application: Application):
+    """應用初始化後的設置"""
     try:
         print("📋 設置機器人命令...")
         await setup_commands(application)
@@ -1597,6 +1616,7 @@ async def post_init(application: Application):
         traceback.print_exc()
 
 def main():
+    """主程式入口"""
     try:
         print("🤖 啟動中...")
         print(f"Token: {TELEGRAM_TOKEN[:10]}...")
@@ -1604,12 +1624,22 @@ def main():
         print(f"🔧 翻譯服務: Gemini/OpenAI/Google Translate")
         print(f"⚡ Twitter 監控頻率: 每 180 秒 (3 分鐘)")
         
+        # 創建新的事件循環
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        
+        # 啟動健康檢查服務器
         loop.run_until_complete(start_health_server())
         
-        application = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+        # 創建 Application 實例（正確的方式，使用 Application 而不是 Updater）
+        application = (
+            Application.builder()
+            .token(TELEGRAM_TOKEN)
+            .post_init(post_init)
+            .build()
+        )
         
+        # 創建對話處理器
         addx_conv_handler = ConversationHandler(
             entry_points=[CommandHandler('addx', addx_start)],
             states={
@@ -1624,6 +1654,7 @@ def main():
             fallbacks=[CommandHandler('cancel', addx_cancel)],
         )
         
+        # 添加所有命令處理器
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("test", test_api))
         application.add_handler(CommandHandler("list", list_whales))
@@ -1638,8 +1669,10 @@ def main():
         application.add_handler(CommandHandler("checkx", checkx_command))
         application.add_handler(CallbackQueryHandler(button_callback))
         
+        # 添加錯誤處理器
         application.add_error_handler(error_handler)
         
+        # 設置定時任務
         job_queue = application.job_queue
         if job_queue:
             job_queue.run_repeating(auto_update, interval=60, first=10)
@@ -1652,8 +1685,14 @@ def main():
         else:
             print("⚠️ Job queue 未啟用")
         
-        print("✅ 已啟動")
-        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+        print("✅ 機器人已啟動，開始運行...")
+        
+        # 開始輪詢（正確的方式，使用 run_polling）
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+        
     except Exception as e:
         print(f"❌ 主程式錯誤: {e}")
         import traceback
