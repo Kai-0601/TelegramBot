@@ -1300,18 +1300,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/removex - 移除 X 帳號追蹤\n"
             "/checkx - 查看 X 推文\n\n"
             "🔧 <b>系統功能:</b>\n"
-            "/test - 測試API連接\n\n"
-            "📢 <b>自動通知:</b>\n"
-            "• Hyperliquid 巨鯨開倉/平倉/加減倉 (即時)\n"
-            "• Hyperliquid 巨鯨定時持倉報告 (每小時 00 分、30 分)\n"
-            "• MEXC 帳號開倉/平倉/加減倉 (即時)\n"
-            "• MEXC 帳號定時持倉報告 (每 15 分鐘)\n"
-            "• Tether 鑄造事件 (每 5 分鐘)\n"
-            "• X (Twitter) 最新推文 (每 3 分鐘)\n"
-            "  ├ 顯示原文內容\n"
-            "  ├ 繁體中文翻譯\n"
-            "  ├ 發文時間\n"
-            "  └ 原文連結",
+            "/test - 測試API連接\n\n",
             parse_mode='HTML'
         )
     except Exception as e:
