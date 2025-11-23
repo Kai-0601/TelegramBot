@@ -1251,8 +1251,6 @@ async def setup_commands(application: Application):
     commands = [
         BotCommand("start", "🤖 啟動機器人"),
         BotCommand("list", "🐋 查看 Hyperliquid 追蹤列表"),
-        BotCommand("addwhale", "➕ 新增 Hyperliquid 巨鯨追蹤"),
-        BotCommand("delwhale", "➖ 移除 Hyperliquid 巨鯨追蹤"),
         BotCommand("whalecheck", "🐋 查看特定 Hyperliquid 巨鯨"),
         BotCommand("allwhale", "🐋 查看所有 Hyperliquid 巨鯨持倉"),
         BotCommand("history", "📜 查看 Hyperliquid 巨鯨歷史紀錄"),
@@ -1282,8 +1280,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🧑 <b>作者:Kai0601</b>\n\n"
             "🐋 <b>Hyperliquid 巨鯨追蹤:</b>\n"
             "/list - 查看追蹤列表\n"
-            "/addwhale - 新增巨鯨追蹤\n"
-            "/delwhale - 移除巨鯨追蹤\n"
             "/whalecheck - 查看特定巨鯨\n"
             "/allwhale - 查看所有巨鯨持倉\n"
             "/history - 查看巨鯨歷史紀錄\n\n"
@@ -1308,71 +1304,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         import traceback
         traceback.print_exc()
 
-# Hyperliquid 巨鯨追蹤命令
-
-async def addwhale_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """開始新增巨鯨的流程"""
-    try:
-        print(f"➕ 用戶 {update.effective_chat.id} 開始新增 Hyperliquid 巨鯨")
-        await update.message.reply_text(
-            "🐋 <b>新增 Hyperliquid 巨鯨追蹤</b>\n\n"
-            "請輸入巨鯨的錢包地址\n\n"
-            "範例: <code>0x1234567890abcdef1234567890abcdef12345678</code>\n\n"
-            "💡 地址必須是 42 個字元，以 0x 開頭\n\n"
-            "輸入 /cancel 取消操作",
-            parse_mode='HTML'
-        )
-        return WAITING_FOR_WHALE_ADDRESS
-    except Exception as e:
-        print(f"❌ addwhale_start 錯誤: {e}")
-        return ConversationHandler.END
-
-async def addwhale_receive_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """接收巨鯨地址"""
-    try:
-        address = update.message.text.strip()
-        
-        if not address.startswith('0x') or len(address) != 42:
-            await update.message.reply_text(
-                "❌ 地址格式不正確！\n\n"
-                "請確認地址:\n"
-                "• 以 0x 開頭\n"
-                "• 總長度為 42 個字元\n\n"
-                "請重新輸入或 /cancel 取消"
-            )
-            return WAITING_FOR_WHALE_ADDRESS
-        
-        if address.lower() in tracker.whales:
-            whale_name = tracker.whales[address.lower()]
-            await update.message.reply_text(
-                f"⚠️ 此地址已在追蹤列表中！\n\n"
-                f"🐋 名稱: {whale_name}\n"
-                f"📍 地址: <code>{address}</code>",
-                parse_mode='HTML'
-            )
-            return ConversationHandler.END
-        
-        await update.message.reply_text("🔍 正在驗證地址...")
-        
-        positions = await tracker.fetch_positions(address)
-        
-        context.user_data['whale_address'] = address
-        context.user_data['has_positions'] = len(positions) > 0
-        
-        await update.message.reply_text(
-            f"✅ 地址驗證成功！\n\n"
-            f"📍 地址: <code>{address}</code>\n"
-            f"📊 當前持倉: {len(positions)} 個\n\n"
-            f"請輸入巨鯨的顯示名稱\n\n"
-            f"範例: <code>巨鯨A</code> 或 <code>機構投資者</code>",
-            parse_mode='HTML'
-        )
-        return WAITING_FOR_WHALE_NAME
-    except Exception as e:
-        print(f"❌ addwhale_receive_address 錯誤: {e}")
-        return ConversationHandler.END
-
-async def addwhale_receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """接收巨鯨名稱"""
     try:
         address = context.user_data.get('whale_address')
@@ -2458,8 +2389,6 @@ def main():
         
         # Hyperliquid 命令
         application.add_handler(CommandHandler("list", list_whales))
-        application.add_handler(addwhale_conv_handler)
-        application.add_handler(CommandHandler("delwhale", delwhale_command))
         application.add_handler(CommandHandler("whalecheck", whale_check))
         application.add_handler(CommandHandler("allwhale", show_all_positions))
         application.add_handler(CommandHandler("history", history_command))
