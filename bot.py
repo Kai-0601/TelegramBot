@@ -2004,13 +2004,13 @@ async def auto_update(context: ContextTypes.DEFAULT_TYPE):
     global last_scheduled_push_time
     
     try:
-        # 詳細調試日誌
         taipei_time = datetime.now(timezone(timedelta(hours=8)))
         print(f"\n{'='*60}")
-        print(f"🔄 auto_update 執行時間: {taipei_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"追蹤巨鯨數: {len(tracker.whales)}")
-        print(f"訂閱用戶數: {len(tracker.subscribed_chats)}")
-        print(f"訂閱列表: {list(tracker.subscribed_chats)}")
+        print(f"🔄 [定時任務] auto_update 執行")
+        print(f"⏰ 執行時間: {taipei_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"🐋 追蹤巨鯨數: {len(tracker.whales)}")
+        print(f"👥 訂閱用戶數: {len(tracker.subscribed_chats)}")
+        print(f"📋 訂閱列表: {list(tracker.subscribed_chats)}")
         print(f"{'='*60}\n")
         
         if not tracker.whales:
@@ -2237,11 +2237,7 @@ def main():
         print("🤖 Telegram Bot 啟動中...")
         print("="*60)
         
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        loop.run_until_complete(start_health_server())
-        
+        # 創建應用程式
         application = (
             Application.builder()
             .token(TELEGRAM_TOKEN)
@@ -2296,52 +2292,84 @@ def main():
         application.add_handler(CommandHandler("checkx", checkx_command))
         
         application.add_handler(CallbackQueryHandler(button_callback))
-        
         application.add_error_handler(error_handler)
         
-        # 設置定時任務（已修改間隔）
+        # 設置定時任務
         job_queue = application.job_queue
         if job_queue:
+            print("\n" + "="*60)
+            print("⏰ 設置定時任務...")
+            print("="*60)
+            
             # Hyperliquid 巨鯨監控 - 每 15 分鐘檢查（900 秒）
             job_queue.run_repeating(auto_update, interval=900, first=10)
+            print("✅ Hyperliquid 巨鯨監控: 每 15 分鐘（首次 10 秒後）")
             
             # Tether 監控 - 每 5 分鐘（300 秒）
             job_queue.run_repeating(tether_update, interval=300, first=30)
+            print("✅ Tether 監控: 每 5 分鐘（首次 30 秒後）")
             
             # Twitter 監控 - 每 10 分鐘（600 秒）
             job_queue.run_repeating(twitter_update, interval=600, first=60)
+            print("✅ Twitter 監控: 每 10 分鐘（首次 60 秒後）")
             
             # 每日重置任務 - 每天凌晨 3 點執行
             job_queue.run_daily(
                 daily_reset_task,
                 time=datetime.strptime("03:00", "%H:%M").time()
             )
+            print("✅ API 狀態重置: 每天凌晨 3:00")
             
-            print("✅ 定時任務已設置:")
-            print("   • Hyperliquid 巨鯨監控: 每 15 分鐘檢查一次")
-            print("   • Hyperliquid 定時推送: 每小時 00 分、30 分 (5分鐘窗口)")
-            print("   • Tether 監控: 每 5 分鐘")
-            print("   • Twitter 監控: 每 10 分鐘")
-            print("   • API 狀態重置: 每天凌晨 3:00")
+            print("="*60)
+            print("✅ 定時任務設置完成")
+            print("="*60 + "\n")
+        else:
+            print("⚠️ 警告：job_queue 為 None，定時任務未設置！")
         
         print("="*60)
-        print("✅ Bot 啟動成功")
+        print("✅ Bot 配置完成")
         print(f"📊 當前追蹤: {len(tracker.whales)} 個巨鯨")
         print(f"👥 當前訂閱: {len(tracker.subscribed_chats)} 個用戶")
         print(f"🐦 Twitter 追蹤: {len(twitter_monitor.accounts)} 個帳號")
         print(f"🔄 Twitter API: {len(twitter_monitor.api_tokens)} 個")
         print(f"🔤 翻譯引擎: {len(twitter_monitor.translator.translators)} 個")
+        print("="*60 + "\n")
+        
+        # ⭐ 關鍵修改：在單獨的線程中啟動 health server
+        print("🌐 啟動 Health Server...")
+        import threading
+        
+        def run_health_server():
+            """在獨立線程中運行 health server"""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(start_health_server())
+            loop.run_forever()
+        
+        health_thread = threading.Thread(target=run_health_server, daemon=True)
+        health_thread.start()
+        print("✅ Health Server 已在後台線程啟動\n")
+        
+        # ⭐ 關鍵修改：使用 run_polling 而不是手動管理 event loop
+        print("🚀 啟動 Telegram Bot Polling...")
         print("="*60)
         
+        # 使用 run_polling，它會正確處理 event loop
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
+            drop_pending_updates=True,
+            poll_interval=1.0,  # 輪詢間隔（秒）
+            timeout=10,  # 長輪詢超時（秒）
         )
         
+    except KeyboardInterrupt:
+        print("\n⚠️ 收到中斷信號，正在關閉...")
     except Exception as e:
         print(f"❌ 主程式錯誤: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        print("\n👋 Bot 已停止")
 
 if __name__ == '__main__':
     main()
