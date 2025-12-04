@@ -1625,7 +1625,6 @@ async def checkx_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not twitter_monitor.accounts:
             await update.message.reply_text(
                 "📭 目前沒有追蹤任何 X 帳號\n\n"
-                "使用 /addx 添加追蹤帳號"
             )
             return
         
